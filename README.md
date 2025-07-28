@@ -10,14 +10,17 @@
 
 ## Keyboard shortcuts
 
+### Rules
 <kbd>R</kbd> - Randomize rules
 
 <kbd>M</kbd> - Mutate rules
 
+### Save/Load
 <kbd>S</kbd> - Save config
 
 <kbd>L</kbd> - Load config
 
+### Parameters
 <kbd>↑</kbd> - Increase Delta Time
 
 <kbd>↓</kbd> - Decrease Delta Time
