@@ -6,7 +6,6 @@ import colorsys
 import pygame
 import math
 import json
-import csv
 
 # Simulation parameters
 WIDTH, HEIGHT = 1920, 1080
