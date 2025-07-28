@@ -2,9 +2,8 @@
 
 ## How to build
 
-
-0. If you haven't, install Python 3.12\*. Then, install Cuda 12.9\*
-1. Run `pip install numpy colorsys pybind11[global]` to install the Python dependencies needed for compilation and running.
+0. If you haven't, install Python 3.12. Then, install CUDA 12.9.\*
+1. Run `pip install numpy pygame colorsys pybind11[global]` to install the Python dependencies needed for compilation and running.
 2. Run `build.bat` to compile the code and generate the .pyd file needed to run the Python script.
 
 \* <sub>Versions below or above probably work. I haven't tested it.</sub>
