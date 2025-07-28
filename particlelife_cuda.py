@@ -90,6 +90,9 @@ def open_file_dialog(saveas = False):
 running = True
 approximate = False
 array_data = np.zeros((WIDTH // APPROXIMATE_SCALE, HEIGHT // APPROXIMATE_SCALE, 3), dtype=np.uint8)
+zoom = 1.0
+dir = [0, 0]
+pos = [0, 0]
 it = 0
 while running:
     clock.tick(FPS)
@@ -104,14 +107,14 @@ while running:
                         rules[i, j]['attraction'] = np.random.uniform(-1.5, 1.5)
                         rules[i, j]['radius'] = np.random.uniform(10.0, 50.0)
                         rules[i, j]['power'] = np.random.uniform(0.25, 1.0)
-                log(f"Randomized rules")
+                log("Randomized rules")
             elif event.key == pygame.K_m:
                 for i in range(NUM_STATES):
                     for j in range(NUM_STATES):
                         rules[i, j]['attraction'] += np.random.uniform(-1.0, 1.0) * MUTATION_STD
                         rules[i, j]['radius'] = np.random.uniform(-1, 1) * MUTATION_STD
                         rules[i, j]['power'] = np.random.uniform(-1, 1) * MUTATION_STD
-                log(f"Mutated rules")
+                log("Mutated rules")
             elif event.key == pygame.K_b:
                 particles['x'] = np.random.uniform(0, WIDTH, NUM_PARTICLES)
                 particles['y'] = np.random.uniform(0, HEIGHT, NUM_PARTICLES)
@@ -120,7 +123,10 @@ while running:
                 particles['state'] = np.random.randint(0, NUM_STATES, NUM_PARTICLES)
                 particles['energy'] = np.random.uniform(0, 1, NUM_PARTICLES)
                 particles['potential'] = np.random.uniform(0, 1, NUM_PARTICLES)
-                log(f"Randomized particles")
+                log("Randomized particles")
+            elif event.key == pygame.K_p:
+                pos = [0, 0]
+                log("Reset position")
             elif event.key == pygame.K_UP and (DT + 0.01) <= 1:
                 DT += 0.01
                 log(f"Delta time changed to: {DT:.2f}")
@@ -210,6 +216,28 @@ while running:
                 log(f"Changed number of states to: {NUM_STATES}")
             elif event.key == pygame.K_a:
                 approximate = not approximate
+            elif event.key == pygame.K_PERIOD and (zoom + 0.1) <= 5:
+                zoom += 0.1
+                log(f"Changed zoom to {zoom}")
+            elif event.key == pygame.K_COMMA and (zoom - 0.1) > 0:
+                zoom -= 0.1
+                log(f"Changed zoom to {zoom}")
+            elif event.key == pygame.K_PERIOD and (zoom + 0.1) <= 5:
+                zoom += 0.1
+                log(f"Changed zoom to {zoom}")
+            elif event.key == pygame.K_KP8:
+                dir[1] = 1
+            elif event.key == pygame.K_KP2:
+                dir[1] = -1
+            elif event.key == pygame.K_KP6:
+                dir[0] = 1
+            elif event.key == pygame.K_KP4:
+                dir[0] = -1
+        elif event.type == pygame.KEYUP:
+            if event.key in (pygame.K_KP4, pygame.K_KP6):
+                dir[0] = 0
+            elif event.key in (pygame.K_KP2, pygame.K_KP8):
+                dir[1] = 0
         elif event.type == pygame.MOUSEWHEEL:
             if event.y > 0 and (TARGET_ENERGY + 0.05) <= 3:
                 TARGET_ENERGY += 0.05
@@ -219,7 +247,8 @@ while running:
                 log(f"Target energy changed to: {TARGET_ENERGY:.2f}")
     # Update simulation using CUDA
     particlelife_cuda.step_simulation(particles, rules.ravel(), DT, WIDTH, HEIGHT, MAX_VELOCITY, TARGET_ENERGY)
-
+    pos[0] += dir[0]
+    pos[1] += dir[1]
     # Clear screen
     screen.fill((0, 0, 0))
 
@@ -227,15 +256,15 @@ while running:
     if not approximate:
         for p in particles:
             color = tuple(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25)))
-            pygame.draw.circle(screen, color, (int(p['x']), int(p['y'])), 1)
+            pygame.draw.circle(screen, color, (min(WIDTH, max(0, int((p['x'] - WIDTH / 2) * zoom + WIDTH / 2 + pos[0]))), min(HEIGHT, max(0, int((p['y'] - HEIGHT / 2) * zoom + HEIGHT / 2 + pos[1])))), 1)
     else:
         old_array_data = array_data
         array_data = np.zeros_like(old_array_data)
         array_data = np.clip(array_data + old_array_data * (1 - DT), 0, 255).astype(np.uint8)
         for p in particles:
             new_color = np.array(list(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25))))
-            old_color = old_array_data[min(int(p['x'] / APPROXIMATE_SCALE), array_data.shape[0]-1), min(int(p['y'] / APPROXIMATE_SCALE), array_data.shape[1]-1), :]
-            array_data[min(int(p['x'] / APPROXIMATE_SCALE), array_data.shape[0]-1), min(int(p['y'] / APPROXIMATE_SCALE), array_data.shape[1]-1), :] = np.clip(np.sqrt(old_color ** 2 + new_color ** 2), 0, 255).astype(np.uint8)
+            old_color = old_array_data[min(max(int(p['x'] / APPROXIMATE_SCALE + pos[0]), 0), array_data.shape[0]-1), min(max(int(p['y'] / APPROXIMATE_SCALE + pos[1]), 0), array_data.shape[1]-1), :]
+            array_data[min(max(int(p['x'] / APPROXIMATE_SCALE + pos[0]), 0), array_data.shape[0]-1), min(max(int(p['y'] / APPROXIMATE_SCALE + pos[1]), 0), array_data.shape[1]-1), :] = np.clip(np.sqrt(old_color ** 2 + new_color ** 2), 0, 255).astype(np.uint8)
         surfarray = pygame.surfarray.make_surface(array_data)
         scaled_surfarray = pygame.transform.scale(surfarray, (WIDTH, HEIGHT))
         screen.blit(scaled_surfarray, (0, 0))

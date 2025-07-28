@@ -21,14 +21,29 @@
 <kbd>L</kbd> - Load config
 
 ### Parameters
-<kbd>↑</kbd> - Increase Delta Time
+<kbd>↑</kbd> - Increase delta time
 
-<kbd>↓</kbd> - Decrease Delta Time
+<kbd>↓</kbd> - Decrease delta time
 
-<kbd>→</kbd> - Increase Maximum Velocity
+<kbd>→</kbd> - Increase maximum velocity
+						
+<kbd>←</kbd> - Decrease maximum velocity
 
-<kbd>←</kbd> - Decrease Maximum Velocity
+<kbd>Mouse Wheel ↑</kbd> - Increase target energy
 
-<kbd>Mouse Wheel ↑</kbd> - Increase Target Energy
+<kbd>Mouse Wheel ↓</kbd> - Decrease target energy
 
-<kbd>Mouse Wheel ↓</kbd> - Decrease Target Energy
+### Visuals
+<kbd>A</kbd> - Toggle approximation mode
+
+<kbd>Comma</kbd> - Zoom in
+
+<kbd>Period</kbd> - Zoom out
+
+<kbd>Keypad 8</kbd> - Move up
+
+<kbd>Keypad 2</kbd> - Move down
+
+<kbd>Keypad 4</kbd> - Move left
+
+<kbd>Keypad 6</kbd> - Move right
