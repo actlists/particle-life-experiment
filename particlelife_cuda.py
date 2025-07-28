@@ -9,7 +9,7 @@ import json
 
 # Simulation parameters
 WIDTH, HEIGHT = 512, 512
-NUM_PARTICLES = 1200
+NUM_PARTICLES = 1500
 NUM_STATES = 3
 FPS = 60
 DT = 0.05
@@ -252,16 +252,18 @@ while running:
     screen.fill((0, 0, 0))
     if not approximate:
         for p in particles:
-            color = tuple(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25)))
-            pygame.draw.circle(screen, color, (min(WIDTH, max(0, int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2))), min(HEIGHT, max(0, int((p['y'] - pos[1] - WIDTH / 2) * zoom + WIDTH / 2)))), 1)
+            if 0 <= int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) < WIDTH and 0 <= int((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) < HEIGHT:
+                color = tuple(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25)))
+                pygame.draw.circle(screen, color, (min(WIDTH, max(0, int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2))), min(HEIGHT, max(0, int((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2)))), 1)
     else:
         old_array_data = array_data
         array_data = np.zeros_like(old_array_data)
         array_data = np.clip(array_data + old_array_data * (1 - DT), 0, 255).astype(np.uint8)
         for p in particles:
-            new_color = np.array(list(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25))))
-            old_color = old_array_data[min(max(int(p['x'] / APPROXIMATE_SCALE - pos[0]), 0), array_data.shape[0]-1), min(max(int(p['y'] / APPROXIMATE_SCALE - pos[1]), 0), array_data.shape[1]-1), :]
-            array_data[min(max(int(p['x'] / APPROXIMATE_SCALE - pos[0]), 0), array_data.shape[0]-1), min(max(int(p['y'] / APPROXIMATE_SCALE - pos[1]), 0), array_data.shape[1]-1), :] = np.clip(np.sqrt(old_color ** 2 + new_color ** 2), 0, 255).astype(np.uint8)
+            if 0 <= int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) < WIDTH and 0 <= int((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) < HEIGHT:
+                new_color = np.array(list(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25))))
+                old_color = old_array_data[min(max(int(((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) / APPROXIMATE_SCALE), 0), array_data.shape[0]-1), min(max(int(((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) / APPROXIMATE_SCALE), 0), array_data.shape[1]-1), :]
+                array_data[min(max(int(((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) / APPROXIMATE_SCALE), 0), array_data.shape[0]-1), min(max(int(((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) / APPROXIMATE_SCALE), 0), array_data.shape[1]-1), :] = np.clip(np.sqrt(old_color ** 2 + new_color ** 2), 0, 255).astype(np.uint8)
         surfarray = pygame.surfarray.make_surface(array_data)
         scaled_surfarray = pygame.transform.scale(surfarray, (WIDTH, HEIGHT))
         screen.blit(scaled_surfarray, (0, 0))
