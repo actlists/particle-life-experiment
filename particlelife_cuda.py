@@ -8,7 +8,7 @@ import math
 import json
 
 # Simulation parameters
-WIDTH, HEIGHT = 1920, 1080
+WIDTH, HEIGHT = 640, 640
 NUM_PARTICLES = 1000
 NUM_STATES = 3
 FPS = 60
@@ -52,7 +52,7 @@ for i in range(NUM_STATES):
 # Initialize PyGame
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-font = pygame.font.SysFont('Arial', 24)
+font = pygame.font.SysFont('Arial', 12)
 pygame.display.set_caption("ParticleLife Viewer")
 clock = pygame.time.Clock()
 log_messages = []
@@ -63,14 +63,21 @@ def log(message):
     if len(log_messages) > 10:
         log_messages.pop(0)
 
-def open_file_dialog():
+def open_file_dialog(saveas = False):
     root = tk.Tk()
     root.withdraw()  # Hide the main Tkinter window
-
-    file_path = filedialog.askopenfilename(
-        title="Select a file",
-        filetypes=(("JSON files", "JSON *.json"))
-    )
+    if saveas:
+        file_path = filedialog.asksaveasfilename(
+            title="Select a file",
+            filetypes=(("JSON files", "JSON *.json")),
+            defaultextension=".json"
+        )
+    else:
+        file_path = filedialog.askopenfilename(
+            title="Select a file",
+            filetypes=(("JSON files", "JSON *.json")),
+            defaultextension=".json"
+        )
 
     if file_path:
         log(f"Selected file: {file_path.split("/\\")[-1]}")
@@ -129,15 +136,18 @@ while running:
                     "DT": DT,
                     "TARGET_ENERGY": TARGET_ENERGY,
                     "MAX_VELOCITY": MAX_VELOCITY,
+                    "MUTATION_STD": MUTATION_STD,
+                    "NUM_STATES": NUM_STATES,
+                    "NUM_PARTICLES": NUM_PARTICLES,
                     "RULES": {
                         "ATTRACTION": rules['attraction'].tolist(),
                         "RADIUS": rules['radius'].tolist(),
                         "POWER": rules['power'].tolist()
                     }
                 }
-                filename = open_file_dialog()
+                filename = open_file_dialog(True)
                 if filename is not None:
-                    with open('particle_config.json', 'w', encoding='utf-8') as f:
+                    with open(filename, 'w', encoding='utf-8') as f:
                         json.dump(config, f, indent=4, ensure_ascii=False)
             elif event.key == pygame.K_l:
                 log("Loading configuration")
@@ -148,9 +158,51 @@ while running:
                         DT = config["DT"]
                         TARGET_ENERGY = config["TARGET_ENERGY"]
                         MAX_VELOCITY = config["MAX_VELOCITY"]
+                        MUTATION_STD = config["MUTATION_STD"]
+                        NUM_STATES = config["NUM_STATES"]
+                        NUM_PARTICLES = config["NUM_PARTICLES"]
                         rules['attraction'] = config["RULES"]["ATTRACTION"]
                         rules['radius'] = config["RULES"]["RADIUS"]
                         rules['power'] = config["RULES"]["POWER"]
+                particles['x'] = np.random.uniform(0, WIDTH, NUM_PARTICLES)
+                particles['y'] = np.random.uniform(0, HEIGHT, NUM_PARTICLES)
+                particles['vx'] = np.random.uniform(-1, 1, NUM_PARTICLES)
+                particles['vy'] = np.random.uniform(-1, 1, NUM_PARTICLES)
+                particles['state'] = np.random.randint(0, NUM_STATES, NUM_PARTICLES)
+                particles['energy'] = np.random.uniform(0, 1, NUM_PARTICLES)
+                particles['potential'] = np.random.uniform(0, 1, NUM_PARTICLES)
+            elif event.key == pygame.K_MINUS and (NUM_STATES - 1) >= 2:
+                NUM_STATES -= 1
+                particles['x'] = np.random.uniform(0, WIDTH, NUM_PARTICLES)
+                particles['y'] = np.random.uniform(0, HEIGHT, NUM_PARTICLES)
+                particles['vx'] = np.random.uniform(-1, 1, NUM_PARTICLES)
+                particles['vy'] = np.random.uniform(-1, 1, NUM_PARTICLES)
+                particles['state'] = np.random.randint(0, NUM_STATES, NUM_PARTICLES)
+                particles['energy'] = np.random.uniform(0, 1, NUM_PARTICLES)
+                particles['potential'] = np.random.uniform(0, 1, NUM_PARTICLES)
+                rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
+                for i in range(NUM_STATES):
+                    for j in range(NUM_STATES):
+                        rules[i, j]['attraction'] = np.random.uniform(-2.0, 2.0)
+                        rules[i, j]['radius'] = np.random.uniform(5.0, 30.0)
+                        rules[i, j]['power'] = np.random.uniform(0.25, 2)
+                log(f"Changed number of states to: {NUM_STATES}")
+            elif event.key == pygame.K_EQUALS and (NUM_STATES + 1) <= 20:
+                NUM_STATES += 1
+                particles['x'] = np.random.uniform(0, WIDTH, NUM_PARTICLES)
+                particles['y'] = np.random.uniform(0, HEIGHT, NUM_PARTICLES)
+                particles['vx'] = np.random.uniform(-1, 1, NUM_PARTICLES)
+                particles['vy'] = np.random.uniform(-1, 1, NUM_PARTICLES)
+                particles['state'] = np.random.randint(0, NUM_STATES, NUM_PARTICLES)
+                particles['energy'] = np.random.uniform(0, 1, NUM_PARTICLES)
+                particles['potential'] = np.random.uniform(0, 1, NUM_PARTICLES)
+                rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
+                for i in range(NUM_STATES):
+                    for j in range(NUM_STATES):
+                        rules[i, j]['attraction'] = np.random.uniform(-2.0, 2.0)
+                        rules[i, j]['radius'] = np.random.uniform(5.0, 30.0)
+                        rules[i, j]['power'] = np.random.uniform(0.25, 2)
+                log(f"Changed number of states to: {NUM_STATES}")
         elif event.type == pygame.MOUSEWHEEL:
             if event.y > 0 and (TARGET_ENERGY + 0.05) <= 3:
                 TARGET_ENERGY += 0.05
