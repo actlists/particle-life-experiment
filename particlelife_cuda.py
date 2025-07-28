@@ -80,7 +80,7 @@ def open_file_dialog(saveas = False):
         )
 
     if file_path:
-        log(f"Selected file: {file_path.split("/\\")[-1]}")
+        log(f"Selected file: {file_path.split("/")[-1]}")
         return file_path
     else:
         log("No file selected.")
