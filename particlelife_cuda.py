@@ -69,7 +69,7 @@ def open_file_dialog():
 
     file_path = filedialog.askopenfilename(
         title="Select a file",
-        filetypes=(("JSON files", "JSON *.json")) # Optional: filter file types
+        filetypes=(("JSON files", "JSON *.json"))
     )
 
     if file_path:
