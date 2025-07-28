@@ -9,7 +9,7 @@
 
 #define BLOCK_SIZE 256
 
-extern "C" void launch_kernels(Particle* d_particles, Rule* d_rules, int num_particles, int num_states, float* d_fx, float* d_fy, int width, int height, float dt, float max_velocity, float *target_energy, float *average_energy);
+extern "C" void launch_kernels(Particle* d_particles, Rule* d_rules, int num_particles, int num_states, float* d_fx, float* d_fy, float dt, float max_velocity, float *target_energy, float *average_energy);
 
 namespace py = pybind11;
 
