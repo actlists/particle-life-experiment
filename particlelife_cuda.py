@@ -45,9 +45,9 @@ rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
 # Initialize with random rules
 for i in range(NUM_STATES):
     for j in range(NUM_STATES):
-        rules[i, j]['attraction'] = np.random.uniform(-2.0, 2.0)
-        rules[i, j]['radius'] = np.random.uniform(5.0, 30.0)
-        rules[i, j]['power'] = np.random.uniform(0.25, 2)
+        rules[i, j]['attraction'] = np.random.uniform(-1.0, 1.0)
+        rules[i, j]['radius'] = np.random.uniform(3.0, 25.0)
+        rules[i, j]['power'] = np.random.uniform(0.25, 1.5)
 
 # Initialize PyGame
 pygame.init()
@@ -98,9 +98,9 @@ while running:
             if event.key == pygame.K_r:
                 for i in range(NUM_STATES):
                     for j in range(NUM_STATES):
-                        rules[i, j]['attraction'] = np.random.uniform(-2.0, 2.0)
-                        rules[i, j]['radius'] = np.random.uniform(5.0, 30.0)
-                        rules[i, j]['power'] = np.random.uniform(0.25, 2)
+                        rules[i, j]['attraction'] = np.random.uniform(-1.0, 1.0)
+                        rules[i, j]['radius'] = np.random.uniform(3.0, 25.0)
+                        rules[i, j]['power'] = np.random.uniform(0.25, 1.5)
                 log(f"Randomized rules")
             elif event.key == pygame.K_m:
                 for i in range(NUM_STATES):
@@ -161,6 +161,7 @@ while running:
                         MUTATION_STD = config["MUTATION_STD"]
                         NUM_STATES = config["NUM_STATES"]
                         NUM_PARTICLES = config["NUM_PARTICLES"]
+                        rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
                         rules['attraction'] = config["RULES"]["ATTRACTION"]
                         rules['radius'] = config["RULES"]["RADIUS"]
                         rules['power'] = config["RULES"]["POWER"]
