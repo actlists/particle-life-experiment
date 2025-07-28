@@ -8,14 +8,15 @@ import math
 import json
 
 # Simulation parameters
-WIDTH, HEIGHT = 640, 640
-NUM_PARTICLES = 1000
+WIDTH, HEIGHT = 512, 512
+NUM_PARTICLES = 1200
 NUM_STATES = 3
 FPS = 60
 DT = 0.05
 MAX_VELOCITY = 20.0
 TARGET_ENERGY = 1.0
-MUTATION_STD = 0.1
+MUTATION_STD = 0.01
+APPROXIMATE_SCALE = 4
 
 # Create particle array (NumPy structured dtype matching C++ `Particle`)
 particles_dtype = np.dtype([
@@ -45,9 +46,9 @@ rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
 # Initialize with random rules
 for i in range(NUM_STATES):
     for j in range(NUM_STATES):
-        rules[i, j]['attraction'] = np.random.uniform(-1.0, 1.0)
-        rules[i, j]['radius'] = np.random.uniform(3.0, 25.0)
-        rules[i, j]['power'] = np.random.uniform(0.25, 1.5)
+        rules[i, j]['attraction'] = np.random.uniform(-1.5, 1.5)
+        rules[i, j]['radius'] = np.random.uniform(10.0, 50.0)
+        rules[i, j]['power'] = np.random.uniform(0.25, 1.0)
 
 # Initialize PyGame
 pygame.init()
@@ -69,13 +70,13 @@ def open_file_dialog(saveas = False):
     if saveas:
         file_path = filedialog.asksaveasfilename(
             title="Select a file",
-            filetypes=(("JSON files", "JSON *.json")),
+            filetypes=(("JSON *.json", "JSON *.json")),
             defaultextension=".json"
         )
     else:
         file_path = filedialog.askopenfilename(
             title="Select a file",
-            filetypes=(("JSON files", "JSON *.json")),
+            filetypes=(("JSON *.json", "JSON *.json")),
             defaultextension=".json"
         )
 
@@ -87,6 +88,8 @@ def open_file_dialog(saveas = False):
         return
 
 running = True
+approximate = False
+array_data = np.zeros((WIDTH // APPROXIMATE_SCALE, HEIGHT // APPROXIMATE_SCALE, 3), dtype=np.uint8)
 it = 0
 while running:
     clock.tick(FPS)
@@ -98,9 +101,9 @@ while running:
             if event.key == pygame.K_r:
                 for i in range(NUM_STATES):
                     for j in range(NUM_STATES):
-                        rules[i, j]['attraction'] = np.random.uniform(-1.0, 1.0)
-                        rules[i, j]['radius'] = np.random.uniform(3.0, 25.0)
-                        rules[i, j]['power'] = np.random.uniform(0.25, 1.5)
+                        rules[i, j]['attraction'] = np.random.uniform(-1.5, 1.5)
+                        rules[i, j]['radius'] = np.random.uniform(10.0, 50.0)
+                        rules[i, j]['power'] = np.random.uniform(0.25, 1.0)
                 log(f"Randomized rules")
             elif event.key == pygame.K_m:
                 for i in range(NUM_STATES):
@@ -165,6 +168,7 @@ while running:
                         rules['attraction'] = config["RULES"]["ATTRACTION"]
                         rules['radius'] = config["RULES"]["RADIUS"]
                         rules['power'] = config["RULES"]["POWER"]
+                particles = np.zeros(NUM_PARTICLES, dtype=particles_dtype)
                 particles['x'] = np.random.uniform(0, WIDTH, NUM_PARTICLES)
                 particles['y'] = np.random.uniform(0, HEIGHT, NUM_PARTICLES)
                 particles['vx'] = np.random.uniform(-1, 1, NUM_PARTICLES)
@@ -184,9 +188,9 @@ while running:
                 rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
                 for i in range(NUM_STATES):
                     for j in range(NUM_STATES):
-                        rules[i, j]['attraction'] = np.random.uniform(-2.0, 2.0)
-                        rules[i, j]['radius'] = np.random.uniform(5.0, 30.0)
-                        rules[i, j]['power'] = np.random.uniform(0.25, 2)
+                        rules[i, j]['attraction'] = np.random.uniform(-1.5, 1.5)
+                        rules[i, j]['radius'] = np.random.uniform(10.0, 50.0)
+                        rules[i, j]['power'] = np.random.uniform(0.25, 1.0)
                 log(f"Changed number of states to: {NUM_STATES}")
             elif event.key == pygame.K_EQUALS and (NUM_STATES + 1) <= 20:
                 NUM_STATES += 1
@@ -200,10 +204,12 @@ while running:
                 rules = np.zeros((NUM_STATES, NUM_STATES), dtype=rules_dtype)
                 for i in range(NUM_STATES):
                     for j in range(NUM_STATES):
-                        rules[i, j]['attraction'] = np.random.uniform(-2.0, 2.0)
-                        rules[i, j]['radius'] = np.random.uniform(5.0, 30.0)
-                        rules[i, j]['power'] = np.random.uniform(0.25, 2)
+                        rules[i, j]['attraction'] = np.random.uniform(-1.5, 1.5)
+                        rules[i, j]['radius'] = np.random.uniform(10.0, 50.0)
+                        rules[i, j]['power'] = np.random.uniform(0.25, 1.0)
                 log(f"Changed number of states to: {NUM_STATES}")
+            elif event.key == pygame.K_a:
+                approximate = not approximate
         elif event.type == pygame.MOUSEWHEEL:
             if event.y > 0 and (TARGET_ENERGY + 0.05) <= 3:
                 TARGET_ENERGY += 0.05
@@ -218,9 +224,21 @@ while running:
     screen.fill((0, 0, 0))
 
     # Draw particles
-    for p in particles:
-        color = tuple(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) / 4 * 3 + 0.25)))
-        pygame.draw.circle(screen, color, (int(p['x']), int(p['y'])), 2)
+    if not approximate:
+        for p in particles:
+            color = tuple(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25)))
+            pygame.draw.circle(screen, color, (int(p['x']), int(p['y'])), 1)
+    else:
+        old_array_data = array_data
+        array_data = np.zeros_like(old_array_data)
+        array_data = np.clip(array_data + old_array_data * (1 - DT), 0, 255).astype(np.uint8)
+        for p in particles:
+            new_color = np.array(list(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25))))
+            old_color = old_array_data[min(int(p['x'] / APPROXIMATE_SCALE), array_data.shape[0]-1), min(int(p['y'] / APPROXIMATE_SCALE), array_data.shape[1]-1), :]
+            array_data[min(int(p['x'] / APPROXIMATE_SCALE), array_data.shape[0]-1), min(int(p['y'] / APPROXIMATE_SCALE), array_data.shape[1]-1), :] = np.clip(np.sqrt(old_color ** 2 + new_color ** 2), 0, 255).astype(np.uint8)
+        surfarray = pygame.surfarray.make_surface(array_data)
+        scaled_surfarray = pygame.transform.scale(surfarray, (WIDTH, HEIGHT))
+        screen.blit(scaled_surfarray, (0, 0))
     y_offset = 6
     for i, (timer, message) in enumerate(log_messages):
         text_surface = font.render(message, True, (255, 255, 255)) # White text
