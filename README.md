@@ -29,21 +29,15 @@
 						
 <kbd>←</kbd> - Decrease maximum velocity
 
-<kbd>Mouse Wheel ↑</kbd> - Increase target energy
+<kbd>Comma</kbd> - Increase target energy
 
-<kbd>Mouse Wheel ↓</kbd> - Decrease target energy
+<kbd>Period</kbd> - Decrease target energy
 
 ### Visuals
 <kbd>A</kbd> - Toggle approximation mode
 
-<kbd>Comma</kbd> - Zoom in
+<kbd>Mouse Wheel ↑</kbd> - Zoom in
 
-<kbd>Period</kbd> - Zoom out
+<kbd>Mouse Wheel ↓</kbd> - Zoom out
 
-<kbd>Keypad 8</kbd> - Move up
-
-<kbd>Keypad 2</kbd> - Move down
-
-<kbd>Keypad 4</kbd> - Move left
-
-<kbd>Keypad 6</kbd> - Move right
+<kbd>Mouse Drag</kbd> - Move

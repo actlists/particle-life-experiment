@@ -50,8 +50,6 @@ __global__ void integrate(
     float* force_y,
     int num_particles,
     float dt,
-	int width,
-	int height,
 	float max_velocity,
 	float* target_energy,
 	float* average_energy
@@ -70,8 +68,6 @@ __global__ void integrate(
 	}
     p.x += p.vx * dt * p.energy;
     p.y += p.vy * dt * p.energy;
-	p.x = fmodf(width + fmodf(p.x, width), width);
-	p.y = fmodf(height + fmodf(p.y, height), height);
 }
 
 __global__ void update_states(
@@ -92,7 +88,7 @@ __global__ void update_states(
 	p.potential += p.energy - p.potential * dt;
 }
 
-extern "C" void launch_kernels(Particle* d_particles, Rule* d_rules, int num_particles, int num_states, float* d_fx, float* d_fy, int width, int height, float dt, float max_velocity, float *target_energy, float *average_energy) {
+extern "C" void launch_kernels(Particle* d_particles, Rule* d_rules, int num_particles, int num_states, float* d_fx, float* d_fy, float dt, float max_velocity, float *target_energy, float *average_energy) {
     int blockSize = 256;
     int gridSize = (num_particles + blockSize - 1) / blockSize;
 	
@@ -102,7 +98,7 @@ extern "C" void launch_kernels(Particle* d_particles, Rule* d_rules, int num_par
 	get_avg<<<gridSize, blockSize>>>(d_particles, num_particles, average_energy);
     cudaDeviceSynchronize();
 
-    integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, width, height, max_velocity, target_energy, average_energy);
+    integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, target_energy, average_energy);
     cudaDeviceSynchronize();
 
     update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt);

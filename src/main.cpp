@@ -15,7 +15,7 @@ namespace py = pybind11;
 
 static float h_average_energy = 0;
 
-void step_simulation(py::array_t<Particle> particles_np, py::array_t<Rule> rules_np, float dt, int width, int height, float max_velocity, float target_energy) {
+void step_simulation(py::array_t<Particle> particles_np, py::array_t<Rule> rules_np, float dt, float max_velocity, float target_energy) {
     auto buf_particles = particles_np.request();
     auto buf_rules = rules_np.request();
 
@@ -50,7 +50,7 @@ void step_simulation(py::array_t<Particle> particles_np, py::array_t<Rule> rules
     cudaMemcpy(d_rules, h_rules, sizeof(Rule) * num_states * num_states, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_target_energy, &target_energy, sizeof(float), cudaMemcpyHostToDevice);
     // Run CUDA kernels
-    launch_kernels(d_particles, d_rules, num_particles, num_states, d_fx, d_fy, width, height, dt, max_velocity, d_target_energy, average_energy);
+    launch_kernels(d_particles, d_rules, num_particles, num_states, d_fx, d_fy, dt, max_velocity, d_target_energy, average_energy);
 
     // Copy result back to host
     cudaMemcpy(h_particles, d_particles, sizeof(Particle) * num_particles, cudaMemcpyDeviceToHost);
@@ -70,5 +70,5 @@ PYBIND11_MODULE(particlelife_cuda, m) {
 	PYBIND11_NUMPY_DTYPE(Rule, attraction, range, power);
 
     m.def("step_simulation", &step_simulation,
-          py::arg("particles"), py::arg("rules"), py::arg("dt"), py::arg("width"), py::arg("height"), py::arg("max_velocity"), py::arg("target_energy"));
+          py::arg("particles"), py::arg("rules"), py::arg("dt"), py::arg("max_velocity"), py::arg("target_energy"));
 }
