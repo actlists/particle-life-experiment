@@ -8,10 +8,17 @@
 ## Keyboard shortcuts
 
 <kbd>R</kbd> - Randomize rules
+
 <kbd>M</kbd> - Mutate rules
+
 <kbd>↑</kbd> - Increase Delta Time
+
 <kbd>↓</kbd> - Decrease Delta Time
+
 <kbd>→</kbd> - Increase Maximum Velocity
+
 <kbd>←</kbd> - Decrease Maximum Velocity
+
 <kbd>Mouse Wheel ↑</kbd> - Increase Target Energy
+
 <kbd>Mouse Wheel ↓</kbd> - Decrease Target Energy
