@@ -23,7 +23,7 @@ __global__ void compute_forces(
     float* force_x,
     float* force_y,
 	float* mass,
-	float potential_gain
+	float* potential_gain
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
@@ -45,7 +45,7 @@ __global__ void compute_forces(
 		
         fx += force * dx;
 		fy += force * dy;
-		p_i.potential += force * dt * p_i.energy * p_j.energy * potential_gain;
+		p_i.potential += force * dt * *potential_gain;
     }
 
     force_x[i] = fx;
@@ -103,11 +103,11 @@ __global__ void update_states(
     if (i >= num_particles) return;
 
     Particle& p = particles[i];
-	if (p.potential > (mass[p.state] * max_velocity * max_velocity)) {
+	if (p.potential * (mass[p.state] * max_velocity * max_velocity) > p.energy) {
 		p.state = (p.state + 1) % num_states;
 		p.potential = 0;
 	}
-	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy - p.potential * *target_energy) * dt * *target_energy;
+	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy * *target_energy) * dt * *target_energy;
 }
 
 __device__ __host__ inline void unpackRGBA(uint32_t packed, float& r, float& g, float& b, float& a) {
@@ -192,6 +192,7 @@ static float* d_accum_a = nullptr;
 static float* d_accum_r = nullptr;
 static float* d_accum_g = nullptr;
 static float* d_accum_b = nullptr;
+static float* d_potential_gain = nullptr;
 static uint32_t* d_input = nullptr;
 static uint32_t* d_output = nullptr;
 void init_cuda_managed_buffers(int num_particles, int num_states, int width, int height) {
@@ -228,6 +229,9 @@ void init_cuda_managed_buffers(int num_particles, int num_states, int width, int
 	}
 	if (!d_output) {
 		cudaMallocManaged(&d_output, width * height * sizeof(uint32_t));
+	}
+	if (!d_potential_gain) {
+		cudaMallocManaged(&d_potential_gain, sizeof(float));
 	}
 }
 
@@ -266,12 +270,12 @@ void free_cuda_managed_buffers() {
 void step_simulation(int num_particles, int num_states, float dt, float max_velocity, float target_energy, int frameskip, float potential_gain) {
     int blockSize = BLOCK_SIZE;
     int gridSize = (num_particles + blockSize - 1) / blockSize;
-
+	*d_target_energy = target_energy;
+	*d_potential_gain = potential_gain;
     // Initialize average energy and target energy in managed memory
 	for (int i = 0; i < frameskip; ++i) {
 		*d_average_energy = 0.0f;
-		*d_target_energy = target_energy;
-		compute_forces<<<gridSize, blockSize>>>(d_particles, d_rules, num_particles, num_states, dt, d_fx, d_fy, d_mass, potential_gain);
+		compute_forces<<<gridSize, blockSize>>>(d_particles, d_rules, num_particles, num_states, dt, d_fx, d_fy, d_mass, d_potential_gain);
 		cudaDeviceSynchronize();
 
 		get_avg<<<gridSize, blockSize>>>(d_particles, num_particles, d_average_energy);
@@ -335,8 +339,8 @@ int main(int argc, char* argv[]) {
     // Initialize particles with random positions, velocities, states, and energy
 	srand(time(0));
     for (Particle& p : particles) {
-		p.x = static_cast<float>(rand() % width);
-		p.y = static_cast<float>(rand() % height);
+		p.x = ((float)rand() / RAND_MAX * width - width / 2) / zoom + width / 2 + offsetX;
+		p.y = ((float)rand() / RAND_MAX * height - height / 2) / zoom + height / 2 + offsetY;
 		p.vx = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
 		p.vy = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
 		p.state = rand() % num_states;
@@ -390,8 +394,8 @@ int main(int argc, char* argv[]) {
 							break;
 						case SDLK_B:
 							for (Particle& p : particles) {
-								p.x = static_cast<float>(rand() % width);
-								p.y = static_cast<float>(rand() % height);
+								p.x = ((float)rand() / RAND_MAX * width - width / 2) / zoom + width / 2 + offsetX;
+								p.y = ((float)rand() / RAND_MAX * height - height / 2) / zoom + height / 2 + offsetY;
 								p.vx = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
 								p.vy = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
 								p.state = rand() % num_states;
@@ -477,11 +481,11 @@ int main(int argc, char* argv[]) {
 							break;
 						case SDLK_4:
 							potential_gain *= 1.1;
-							printf("Changed potential_gain to %d\n", potential_gain);
+							printf("Changed potential_gain to %.2f\n", potential_gain);
 							break;
 						case SDLK_3:
 							potential_gain /= 1.1;
-							printf("Changed potential_gain to %d\n", potential_gain);
+							printf("Changed potential_gain to %.2f\n", potential_gain);
 							break;
 						case SDLK_SPACE:
 							pause = !pause;
