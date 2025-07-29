@@ -26,10 +26,20 @@ WIP
 
 <kbd>Period</kbd> - Decrease target energy
 
+<kbd>2</kbd> - Increase frameskip
+
+<kbd>1</kbd> - Decrease frameskip
+
+<kbd>4</kbd> - Increase potential gain
+
+<kbd>3</kbd> - Decrease potential gain
+
 ### Visuals
 
 <kbd>Mouse Wheel ↑</kbd> - Zoom in
 
 <kbd>Mouse Wheel ↓</kbd> - Zoom out
+
+<kbd>Right Click</kbd> - Toggle big particles (Laggy)
 
 <kbd>Mouse Drag</kbd> - Move

@@ -19,9 +19,11 @@ __global__ void compute_forces(
     Rule* rules,
     int num_particles,
     int num_states,
+	float dt,
     float* force_x,
     float* force_y,
-	float* mass
+	float* mass,
+	float potential_gain
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
@@ -43,6 +45,7 @@ __global__ void compute_forces(
 		
         fx += force * dx;
 		fy += force * dy;
+		p_i.potential += force * dt * p_i.energy * p_j.energy * potential_gain;
     }
 
     force_x[i] = fx;
@@ -93,23 +96,18 @@ __global__ void update_states(
 	float dt,
 	float* mass,
 	int max_velocity,
-	float* average_energy
+	float* average_energy,
+	float* target_energy
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
 
     Particle& p = particles[i];
-	if (p.potential / p.energy > (mass[p.state] * max_velocity * max_velocity)) {
+	if (p.potential > (mass[p.state] * max_velocity * max_velocity)) {
 		p.state = (p.state + 1) % num_states;
-		p.energy = mass[p.state] * max_velocity * max_velocity;
 		p.potential = 0;
 	}
-	for (int j = 0; j < num_particles; ++j) {
-		if (i == j) continue;
-		Particle p2 = particles[j];
-		atomicAdd(&p.potential, p2.potential * dt / (mass[p2.state] * max_velocity * max_velocity) / num_particles);
-	}
-	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy - p.potential) * dt;
+	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy - p.potential * *target_energy) * dt * *target_energy;
 }
 
 __device__ __host__ inline void unpackRGBA(uint32_t packed, float& r, float& g, float& b, float& a) {
@@ -265,36 +263,39 @@ void free_cuda_managed_buffers() {
 	d_output = nullptr;
 }
 
-void step_simulation(int num_particles, int num_states, float dt, float max_velocity, float target_energy) {
+void step_simulation(int num_particles, int num_states, float dt, float max_velocity, float target_energy, int frameskip, float potential_gain) {
     int blockSize = BLOCK_SIZE;
     int gridSize = (num_particles + blockSize - 1) / blockSize;
 
     // Initialize average energy and target energy in managed memory
-    *d_average_energy = 0.0f;
-    *d_target_energy = target_energy;
+	for (int i = 0; i < frameskip; ++i) {
+		*d_average_energy = 0.0f;
+		*d_target_energy = target_energy;
+		compute_forces<<<gridSize, blockSize>>>(d_particles, d_rules, num_particles, num_states, dt, d_fx, d_fy, d_mass, potential_gain);
+		cudaDeviceSynchronize();
 
-    compute_forces<<<gridSize, blockSize>>>(d_particles, d_rules, num_particles, num_states, d_fx, d_fy, d_mass);
-    cudaDeviceSynchronize();
+		get_avg<<<gridSize, blockSize>>>(d_particles, num_particles, d_average_energy);
+		cudaDeviceSynchronize();
 
-    get_avg<<<gridSize, blockSize>>>(d_particles, num_particles, d_average_energy);
-    cudaDeviceSynchronize();
+		integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, d_target_energy, d_average_energy);
+		cudaDeviceSynchronize();
 
-    integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, d_target_energy, d_average_energy);
-    cudaDeviceSynchronize();
-
-    update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, max_velocity, d_average_energy);
-    cudaDeviceSynchronize();
+		update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, max_velocity, d_average_energy, d_target_energy);
+		cudaDeviceSynchronize();
+	}
 }
 
 int main(int argc, char* argv[]) {
     int width = 1920;
     int height = 1080;
-    int num_particles = 10000;
+    int num_particles = 5000;
     int num_states = 3;
     int fps = 60;
+	int frameskip = 2;
     float dt = 0.05f;
     float max_velocity = 20.0f;
     float target_energy = 1.0f;
+	float potential_gain = 100.0f;
 	
     // Initialize SDL
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -364,6 +365,7 @@ int main(int argc, char* argv[]) {
     std::vector<uint32_t> framebuffer(width * height, 0);
 	bool smooth = false;
     bool quit = false;
+	bool pause = false;
     SDL_Event e;
 
     while (!quit) {
@@ -402,7 +404,7 @@ int main(int argc, char* argv[]) {
 							zoom = 1.0f;
 							offsetX = 0.0f;
 							offsetY = 0.0f;
-							dt = 0.05f;
+							dt = 0.1f;
 							break;
 						case SDLK_MINUS:
 						case SDLK_KP_MINUS:
@@ -419,6 +421,7 @@ int main(int argc, char* argv[]) {
 							}
 							memcpy(d_mass, mass.data(), sizeof(float) * num_states);
 							memcpy(d_rules, rules.data(), sizeof(Rule) * num_states * num_states);
+							printf("Changed num_states to %d\n", num_states);
 							break;
 						case SDLK_EQUALS:
 						case SDLK_KP_PLUS:
@@ -426,7 +429,7 @@ int main(int argc, char* argv[]) {
 							rules = std::vector<Rule>(num_states * num_states);
 							mass = std::vector<float>(num_states);
 							for (Particle& p : particles) {
-								p.state = min(p.state, num_states);
+								p.state = min(p.state, num_states - 1);
 							}
 							for (Rule& r : rules) {
 								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 3.0f;
@@ -438,6 +441,7 @@ int main(int argc, char* argv[]) {
 							}
 							memcpy(d_mass, mass.data(), sizeof(float) * num_states);
 							memcpy(d_rules, rules.data(), sizeof(Rule) * num_states * num_states);
+							printf("Changed num_states to %d\n", num_states);
 							break;
 						case SDLK_UP:
 							dt *= 1.1f;
@@ -462,6 +466,25 @@ int main(int argc, char* argv[]) {
 						case SDLK_COMMA:
 							target_energy /= 1.1f;
 							printf("Changed target_energy to %.2f\n", target_energy);
+							break;
+						case SDLK_2:
+							frameskip++;
+							printf("Changed frameskip to %d\n", frameskip);
+							break;
+						case SDLK_1:
+							frameskip--;
+							printf("Changed frameskip to %d\n", frameskip);
+							break;
+						case SDLK_4:
+							potential_gain *= 1.1;
+							printf("Changed potential_gain to %d\n", potential_gain);
+							break;
+						case SDLK_3:
+							potential_gain /= 1.1;
+							printf("Changed potential_gain to %d\n", potential_gain);
+							break;
+						case SDLK_SPACE:
+							pause = !pause;
 							break;
 					}
 					break;
@@ -494,14 +517,14 @@ int main(int argc, char* argv[]) {
 			}
 		}
         // Run simulation step - d_particles updated in place in managed memory
-        step_simulation(num_particles, num_states, dt, max_velocity, target_energy);
+		
+		if (!pause) step_simulation(num_particles, num_states, dt, max_velocity, target_energy, frameskip, potential_gain);
 
         // Copy particle positions back to host vector for any CPU-side logic if needed
         memcpy(particles.data(), d_particles, sizeof(Particle) * num_particles);
 
 		// Clear framebuffer to black
 		memset(framebuffer.data(), 0, width * height * sizeof(uint32_t));
-		
 		// Set each particle as a pixel
 		for (int i = 0; i < num_particles; ++i) {
 			Particle& p = particles[i];
@@ -509,8 +532,8 @@ int main(int argc, char* argv[]) {
 			int y = (int)((p.y - offsetY - height / 2.0f) * zoom + height / 2.0f);
 			if (x >= 0 && x < width && y >= 0 && y < height) {
 				float h = (float)p.state / (float)num_states;
-				float s = 1.0f;
-				float v = fminf(1.0f, p.energy);
+				float s = fminf(1.0f, p.energy / sqrtf(mass[p.state] * max_velocity * max_velocity)) * 3 / 4 + 0.25;
+				float v = fminf(1.0f, fmaxf(0.0f, 1.0f - p.potential / sqrtf(mass[p.state] * max_velocity * max_velocity))) * 3 / 4 + 0.25;
 				float c = v * s;
 				float x_col = c * (1 - fabsf(fmodf(h * 6.0f, 2) - 1));
 				float m = v - c;
