@@ -6,9 +6,13 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <cstdint>
+#include <cmath>
+#include <cstdio>
 #include "common.h"
 
 #define BLOCK_SIZE 256
+#define SMOOTH_BLOCK_SIZE 32
 
 __global__ void compute_forces(
     Particle* particles,
@@ -34,8 +38,8 @@ __global__ void compute_forces(
         float dist2 = dx * dx + dy * dy;
         float dist = sqrtf(dist2 + 1e-6f);
 
-        float influence = expf(-dist * dist / (2.0f * rule.range * rule.range));
-        float force = (mass[p_i.state] * mass[p_j.state]) / dist * ((rule.attraction + rule.power) * influence);
+        float influence = expf(-dist * dist / (2.0f * rule.range * rule.range)) * (p_i.energy + p_j.energy) * rule.power;
+        float force = (mass[p_i.state] * dist + mass[p_j.state] * dist) / (mass[p_i.state] + mass[p_j.state]) * rule.attraction * influence;
 		
         fx += force * dx;
 		fy += force * dy;
@@ -52,6 +56,8 @@ __global__ void get_avg(Particle* particles, int num_particles, float *average_e
 	Particle& p = particles[i];
 	atomicAdd(average_energy, p.energy);
 }
+
+
 
 __global__ void integrate(
     Particle* particles,
@@ -87,18 +93,93 @@ __global__ void update_states(
 	float dt,
 	float* mass,
 	int max_velocity,
-	float* target_energy,
 	float* average_energy
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
 
     Particle& p = particles[i];
-	if (p.potential > p.energy) {
+	if (p.potential / p.energy > (mass[p.state] * max_velocity * max_velocity)) {
 		p.state = (p.state + 1) % num_states;
+		p.energy = mass[p.state] * max_velocity * max_velocity;
+		p.potential = 0;
 	}
-	p.potential = (p.potential + p.energy) * dt + p.potential * (1 - dt * 2);
-	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy) * dt;
+	for (int j = 0; j < num_particles; ++j) {
+		if (i == j) continue;
+		Particle p2 = particles[j];
+		atomicAdd(&p.potential, p2.potential * dt / (mass[p2.state] * max_velocity * max_velocity) / num_particles);
+	}
+	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy - p.potential) * dt;
+}
+
+__device__ __host__ inline void unpackRGBA(uint32_t packed, float& r, float& g, float& b, float& a) {
+    r = float((packed >> 24) & 0xFF);
+    g = float((packed >> 16) & 0xFF);
+    b = float((packed >> 8)  & 0xFF);
+    a = float((packed)       & 0xFF);
+}
+
+__device__ __host__ inline uint32_t packRGBA(float r, float g, float b, float a) {
+    uint32_t R = min(max(int(r + 0.5f), 0), 255);
+    uint32_t G = min(max(int(g + 0.5f), 0), 255);
+    uint32_t B = min(max(int(b + 0.5f), 0), 255);
+    uint32_t A = min(max(int(a + 0.5f), 0), 255);
+    return (R << 24) | (G << 16) | (B << 8) | A;
+}
+
+__device__ float gaussianWeight(int dx, int dy, float sigma) {
+    float dist2 = dx * dx + dy * dy;
+    return expf(-dist2 / (2.0f * sigma * sigma));
+}
+
+__global__ void smoothFromDitheredRGBA(
+    const uint32_t* input,
+    float* accum_r, float* accum_g, float* accum_b, float* accum_a,
+    int width, int height, int blur_radius, float sigma
+) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int idx = y * width + x;
+    uint32_t packed = input[idx];
+    if (packed == 0) return;
+
+    float r, g, b, a;
+    unpackRGBA(packed, r, g, b, a);
+
+    for (int dy = -blur_radius; dy <= blur_radius; ++dy) {
+        for (int dx = -blur_radius; dx <= blur_radius; ++dx) {
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                int nidx = ny * width + nx;
+                float w = gaussianWeight(dx, dy, sigma);
+                atomicAdd(&accum_r[nidx], r * w);
+                atomicAdd(&accum_g[nidx], g * w);
+                atomicAdd(&accum_b[nidx], b * w);
+                atomicAdd(&accum_a[nidx], a * w);
+            }
+        }
+    }
+}
+
+__global__ void composeRGBAImage(
+    const float* accum_r, const float* accum_g,
+    const float* accum_b, const float* accum_a,
+    uint32_t* output, int width, int height
+) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int idx = y * width + x;
+    float r = accum_r[idx];
+    float g = accum_g[idx];
+    float b = accum_b[idx];
+    float a = accum_a[idx];
+
+    output[idx] = packRGBA(r, g, b, a);
 }
 
 static Particle* d_particles = nullptr;
@@ -109,7 +190,12 @@ static float* d_average_energy = nullptr;
 static float* d_target_energy = nullptr;
 static int* d_grid = nullptr;
 static float* d_mass = nullptr;
-
+static float* d_accum_a = nullptr;
+static float* d_accum_r = nullptr;
+static float* d_accum_g = nullptr;
+static float* d_accum_b = nullptr;
+static uint32_t* d_input = nullptr;
+static uint32_t* d_output = nullptr;
 void init_cuda_managed_buffers(int num_particles, int num_states, int width, int height) {
     if (!d_particles)
         cudaMallocManaged(&d_particles, sizeof(Particle) * num_particles);
@@ -127,6 +213,24 @@ void init_cuda_managed_buffers(int num_particles, int num_states, int width, int
         cudaMallocManaged(&d_grid, sizeof(int) * width * height);
 	if (!d_mass)
 		cudaMallocManaged(&d_mass, sizeof(float) * num_states);
+	if (!d_accum_a) {
+		cudaMallocManaged(&d_accum_a, width * height * sizeof(float));
+	}
+	if (!d_accum_r) {
+		cudaMallocManaged(&d_accum_r, width * height * sizeof(float));
+	}
+	if (!d_accum_g) {
+		cudaMallocManaged(&d_accum_g, width * height * sizeof(float));
+	}
+	if (!d_accum_b) {
+		cudaMallocManaged(&d_accum_b, width * height * sizeof(float));
+	}
+	if (!d_input) {
+		cudaMallocManaged(&d_input, width * height * sizeof(uint32_t));
+	}
+	if (!d_output) {
+		cudaMallocManaged(&d_output, width * height * sizeof(uint32_t));
+	}
 }
 
 void free_cuda_managed_buffers() {
@@ -138,6 +242,12 @@ void free_cuda_managed_buffers() {
     if (d_target_energy) cudaFree(d_target_energy);
     if (d_grid) cudaFree(d_grid);
 	if (d_mass) cudaFree(d_mass);
+	if (d_accum_a) cudaFree(d_accum_a);
+	if (d_accum_r) cudaFree(d_accum_r);
+	if (d_accum_g) cudaFree(d_accum_g);
+	if (d_accum_b) cudaFree(d_accum_b);
+	if (d_input) cudaFree(d_input);
+	if (d_output) cudaFree(d_output);
 
     d_particles = nullptr;
     d_rules = nullptr;
@@ -147,6 +257,12 @@ void free_cuda_managed_buffers() {
     d_target_energy = nullptr;
     d_grid = nullptr;
 	d_mass = nullptr;
+	d_accum_a = nullptr;
+	d_accum_r = nullptr;
+	d_accum_g = nullptr;
+	d_accum_b = nullptr;
+	d_input = nullptr;
+	d_output = nullptr;
 }
 
 void step_simulation(int num_particles, int num_states, float dt, float max_velocity, float target_energy) {
@@ -166,18 +282,18 @@ void step_simulation(int num_particles, int num_states, float dt, float max_velo
     integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, d_target_energy, d_average_energy);
     cudaDeviceSynchronize();
 
-    update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, max_velocity, d_target_energy, d_average_energy);
+    update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, max_velocity, d_average_energy);
     cudaDeviceSynchronize();
 }
 
 int main(int argc, char* argv[]) {
     int width = 1920;
     int height = 1080;
-    int num_particles = 3072;
+    int num_particles = 10000;
     int num_states = 3;
     int fps = 60;
     float dt = 0.05f;
-    float max_velocity = 50.0f;
+    float max_velocity = 20.0f;
     float target_energy = 1.0f;
 	
     // Initialize SDL
@@ -218,23 +334,23 @@ int main(int argc, char* argv[]) {
     // Initialize particles with random positions, velocities, states, and energy
 	srand(time(0));
     for (Particle& p : particles) {
-        p.x = static_cast<float>(rand() % width);
-        p.y = static_cast<float>(rand() % height);
-        p.vx = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
-        p.vy = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
-        p.state = rand() % num_states;
-        p.energy = (float)rand() / RAND_MAX;  // Start with positive energy
-        p.potential = (float)rand() / RAND_MAX;
-    }
+		p.x = static_cast<float>(rand() % width);
+		p.y = static_cast<float>(rand() % height);
+		p.vx = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
+		p.vy = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
+		p.state = rand() % num_states;
+		p.energy = 1.0;
+		p.potential = (float)rand() / RAND_MAX;
+	}
 
     // Initialize rules - deterministic for stable forces
     for (Rule& r : rules) {
-        r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 3.0f; // positive attraction for all pairs
-		r.range = 80.0f - ((float)rand() / RAND_MAX) * 70.0f;
+        r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 3.0f;
+		r.range = 5.0f + ((float)rand() / RAND_MAX) * 40.0f;
 		r.power = ((float)rand() / RAND_MAX) * 2.0f + 0.5f;
     }
 	for (float& m : mass) {
-		m = ((float)rand() / RAND_MAX) * 16.0f;
+		m = ((float)rand() / RAND_MAX) * 25.0f + 0.5f;
 	}
 
     // Initialize CUDA managed memory buffers
@@ -246,7 +362,7 @@ int main(int argc, char* argv[]) {
 	memcpy(d_mass, mass.data(), sizeof(float) * num_states);
 
     std::vector<uint32_t> framebuffer(width * height, 0);
-
+	bool smooth = false;
     bool quit = false;
     SDL_Event e;
 
@@ -260,12 +376,12 @@ int main(int argc, char* argv[]) {
 					switch (e.key.key) {
 						case SDLK_R:
 							for (Rule& r : rules) {
-								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 5.0f - 0.5f; // positive attraction for all pairs
-								r.range = 80.0f - ((float)rand() / RAND_MAX) * 70.0f;
+								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 3.0f;
+								r.range = 5.0f + ((float)rand() / RAND_MAX) * 40.0f;
 								r.power = ((float)rand() / RAND_MAX) * 2.0f + 0.5f;
 							}
 							for (float& m : mass) {
-								m = ((float)rand() / RAND_MAX) * 16.0f;
+								m = ((float)rand() / RAND_MAX) * 25.0f + 0.5f;
 							}
 							memcpy(d_mass, mass.data(), sizeof(float) * num_states);
 							memcpy(d_rules, rules.data(), sizeof(Rule) * num_states * num_states);
@@ -274,10 +390,10 @@ int main(int argc, char* argv[]) {
 							for (Particle& p : particles) {
 								p.x = static_cast<float>(rand() % width);
 								p.y = static_cast<float>(rand() % height);
-								p.vx = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
-								p.vy = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+								p.vx = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
+								p.vy = ((float)rand() / RAND_MAX - 0.5f) * max_velocity;
 								p.state = rand() % num_states;
-								p.energy = (float)rand() / RAND_MAX;
+								p.energy = 1.0;
 								p.potential = (float)rand() / RAND_MAX;
 							}
 							memcpy(d_particles, particles.data(), sizeof(Particle) * num_particles);
@@ -294,12 +410,12 @@ int main(int argc, char* argv[]) {
 							rules = std::vector<Rule>(num_states * num_states);
 							mass = std::vector<float>(num_states);
 							for (Rule& r : rules) {
-								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 5.0f - 0.5f; // positive attraction for all pairs
-								r.range = 80.0f - ((float)rand() / RAND_MAX) * 70.0f;
+								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 3.0f;
+								r.range = 5.0f + ((float)rand() / RAND_MAX) * 40.0f;
 								r.power = ((float)rand() / RAND_MAX) * 2.0f + 0.5f;
 							}
 							for (float& m : mass) {
-								m = ((float)rand() / RAND_MAX) * 16.0f;
+								m = ((float)rand() / RAND_MAX) * 25.0f + 0.5f;
 							}
 							memcpy(d_mass, mass.data(), sizeof(float) * num_states);
 							memcpy(d_rules, rules.data(), sizeof(Rule) * num_states * num_states);
@@ -309,13 +425,16 @@ int main(int argc, char* argv[]) {
 							num_states++;
 							rules = std::vector<Rule>(num_states * num_states);
 							mass = std::vector<float>(num_states);
+							for (Particle& p : particles) {
+								p.state = min(p.state, num_states);
+							}
 							for (Rule& r : rules) {
-								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 5.0f - 0.5f; // positive attraction for all pairs
+								r.attraction = ((float)rand() / RAND_MAX - 0.5f) * 3.0f;
 								r.range = 80.0f - ((float)rand() / RAND_MAX) * 70.0f;
 								r.power = ((float)rand() / RAND_MAX) * 2.0f + 0.5f;
 							}
 							for (float& m : mass) {
-								m = ((float)rand() / RAND_MAX) * 16.0f;
+								m = ((float)rand() / RAND_MAX) * 25.0f + 0.5f;
 							}
 							memcpy(d_mass, mass.data(), sizeof(float) * num_states);
 							memcpy(d_rules, rules.data(), sizeof(Rule) * num_states * num_states);
@@ -355,6 +474,8 @@ int main(int argc, char* argv[]) {
 						dragging = true;
 						lastMouseX = e.button.x;
 						lastMouseY = e.button.y;
+					} else if (e.button.button == SDL_BUTTON_RIGHT) {
+						smooth = !smooth;
 					}
 					break;
 				case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -413,8 +534,42 @@ int main(int argc, char* argv[]) {
 			}
 		}
 		
-        // Copy framebuffer to SDL texture
-		SDL_UpdateTexture(texture, nullptr, framebuffer.data(), width * sizeof(uint32_t));
+		if (smooth) {
+			cudaMemset(d_output, 0, width * height * sizeof(uint32_t));
+			cudaMemcpy(d_input, framebuffer.data(), width * height * sizeof(uint32_t), cudaMemcpyHostToDevice);
+			// Clear accumulators
+			cudaMemset(d_accum_r, 0, sizeof(float) * width * height);
+			cudaMemset(d_accum_g, 0, sizeof(float) * width * height);
+			cudaMemset(d_accum_b, 0, sizeof(float) * width * height);
+			cudaMemset(d_accum_a, 0, sizeof(float) * width * height);
+			dim3 block(SMOOTH_BLOCK_SIZE, SMOOTH_BLOCK_SIZE);
+			dim3 grid((width + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE, (height + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE);
+			// Smooth
+			smoothFromDitheredRGBA<<<grid, block>>>(
+				d_input, d_accum_r, d_accum_g, d_accum_b, d_accum_a,
+				width, height, 16, 4.0
+			);
+			cudaError_t err = cudaGetLastError();
+			if (err != cudaSuccess) {
+				printf("CUDA error after kernel 1: %s\n", cudaGetErrorString(err));
+			}
+			
+			cudaDeviceSynchronize();
+
+			// Final image
+			composeRGBAImage<<<grid, block>>>(
+				d_accum_r, d_accum_g, d_accum_b, d_accum_a, d_output, width, height
+			);
+			err = cudaGetLastError();
+			if (err != cudaSuccess) {
+				printf("CUDA error after kernel 2: %s\n", cudaGetErrorString(err));
+			}
+			cudaDeviceSynchronize();
+			SDL_UpdateTexture(texture, nullptr, d_output, width * sizeof(uint32_t));
+		} else {
+			// Copy framebuffer to SDL texture
+			SDL_UpdateTexture(texture, nullptr, framebuffer.data(), width * sizeof(uint32_t));
+		}
 		
         SDL_RenderClear(renderer);
         SDL_RenderTexture(renderer, texture, nullptr, nullptr);
