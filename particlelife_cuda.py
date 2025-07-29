@@ -8,8 +8,8 @@ import math
 import json
 
 # Simulation parameters
-WIDTH, HEIGHT = 512, 512
-NUM_PARTICLES = 1500
+WIDTH, HEIGHT = 640, 640
+NUM_PARTICLES = 2048
 NUM_STATES = 3
 FPS = 60
 DT = 0.05
@@ -89,7 +89,6 @@ def open_file_dialog(saveas = False):
 
 running = True
 approximate = False
-array_data = np.zeros((WIDTH // APPROXIMATE_SCALE, HEIGHT // APPROXIMATE_SCALE, 3), dtype=np.uint8)
 zoom = 1.0
 dzoom = 0.0
 dir = [0, 0]
@@ -129,8 +128,11 @@ while running:
                 particles['potential'] = np.random.uniform(0, 1, NUM_PARTICLES)
                 log("Randomized particles")
             elif event.key == pygame.K_p:
-                pos = [0, 0]
                 zoom = 1.0
+                dzoom = 0.0
+                dir = [0, 0]
+                pos = [0, 0]
+                last_mouse_pos = (0, 0)
                 log("Reset position")
             elif event.key == pygame.K_UP and (DT + 0.01) <= 1:
                 DT += 0.01
@@ -248,25 +250,11 @@ while running:
                 last_mouse_pos = event.pos
     # Update simulation using CUDA
     particlelife_cuda.step_simulation(particles, rules.ravel(), DT, MAX_VELOCITY, TARGET_ENERGY)
+    
     # Clear screen
     screen.fill((0, 0, 0))
-    if not approximate:
-        for p in particles:
-            if 0 <= int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) < WIDTH and 0 <= int((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) < HEIGHT:
-                color = tuple(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25)))
-                pygame.draw.circle(screen, color, (min(WIDTH, max(0, int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2))), min(HEIGHT, max(0, int((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2)))), 1)
-    else:
-        old_array_data = array_data
-        array_data = np.zeros_like(old_array_data)
-        array_data = np.clip(array_data + old_array_data * (1 - DT), 0, 255).astype(np.uint8)
-        for p in particles:
-            if 0 <= int((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) < WIDTH and 0 <= int((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) < HEIGHT:
-                new_color = np.array(list(map(lambda e: int(e * 255), colorsys.hsv_to_rgb(p['state'] / NUM_STATES, max(0, min(1, p['energy'] / 2)) ** 2 / 4 * 3 + 0.25, max(0, min(1, p['potential'] / math.sqrt(p['vx'] ** 2 + p['vy'] ** 2))) ** 2 / 4 * 3 + 0.25))))
-                old_color = old_array_data[min(max(int(((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) / APPROXIMATE_SCALE), 0), array_data.shape[0]-1), min(max(int(((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) / APPROXIMATE_SCALE), 0), array_data.shape[1]-1), :]
-                array_data[min(max(int(((p['x'] - pos[0] - WIDTH / 2) * zoom + WIDTH / 2) / APPROXIMATE_SCALE), 0), array_data.shape[0]-1), min(max(int(((p['y'] - pos[1] - HEIGHT / 2) * zoom + HEIGHT / 2) / APPROXIMATE_SCALE), 0), array_data.shape[1]-1), :] = np.clip(np.sqrt(old_color ** 2 + new_color ** 2), 0, 255).astype(np.uint8)
-        surfarray = pygame.surfarray.make_surface(array_data)
-        scaled_surfarray = pygame.transform.scale(surfarray, (WIDTH, HEIGHT))
-        screen.blit(scaled_surfarray, (0, 0))
+    array_data = np.array(particlelife_cuda.render_grid(particles, WIDTH, HEIGHT, zoom, pos[0], pos[1], NUM_STATES)).reshape((HEIGHT, WIDTH, 3)).transpose((1, 0, 2))
+    pygame.surfarray.blit_array(screen, array_data)
     y_offset = 6
     for i, (timer, message) in enumerate(log_messages):
         text_surface = font.render(message, True, (255, 255, 255)) # White text

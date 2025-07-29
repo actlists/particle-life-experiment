@@ -1,7 +1,7 @@
 @echo off
 mkdir build
 cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..\src
-cmake --build . --config Release
-move Release\particlelife_cuda.pyd ..\
+cmake ..\src
+cmake --build .
+move %~dp0build\debug\ParticleLifeExperiment.exe %~dp0
 cd ..

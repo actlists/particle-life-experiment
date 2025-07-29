@@ -1,22 +1,22 @@
 cmake_minimum_required(VERSION 3.18)
-project(ParticleLifeCUDA LANGUAGES CXX CUDA)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+project(ParticleLifeExperiment LANGUAGES CXX CUDA)
 
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-find_package(pybind11 REQUIRED)
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(SDL3_DIR "./SDL3-3.2.18/cmake")
 
-add_library(particlelife_cuda MODULE main.cpp common.h kernel.cu)
+# Find SDL3
+find_package(SDL3 3.2.18 REQUIRED CONFIG)
 
-target_include_directories(particlelife_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# Add executable
+add_executable(ParticleLifeExperiment main.cu)
 
-target_link_libraries(particlelife_cuda PRIVATE pybind11::module)
+# Include SDL3 headers
+target_include_directories(ParticleLifeExperiment PRIVATE ${SDL3_INCLUDE_DIRS})
 
-if (WIN32)
-    set_target_properties(particlelife_cuda PROPERTIES SUFFIX ".pyd")
-else()
-    set_target_properties(particlelife_cuda PROPERTIES SUFFIX ".so")
-endif()
+# Link to SDL3
+target_link_libraries(ParticleLifeExperiment PRIVATE SDL3::SDL3)
 
+# Enable CUDA separable compilation (optional, good for bigger projects)
+set_target_properties(ParticleLifeExperiment PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
