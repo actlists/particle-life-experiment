@@ -35,14 +35,14 @@ __global__ void compute_forces(
         float dist = sqrtf(dist2 + 1e-6f);
 
         float influence = expf(-dist * dist / (2.0f * rule.range * rule.range));
-        float force = (rule.attraction + rule.power) * influence * (p_i.energy + p_j.energy);
+        float force = (mass[p_i.state] * mass[p_j.state]) / dist * ((rule.attraction + rule.power) * influence);
 		
         fx += force * dx;
 		fy += force * dy;
     }
 
-    force_x[i] = fx / (mass[p_i.state] * mass[p_i.state]);
-    force_y[i] = fy / (mass[p_i.state] * mass[p_i.state]);
+    force_x[i] = fx;
+    force_y[i] = fy;
 }
 
 __global__ void get_avg(Particle* particles, int num_particles, float *average_energy)
@@ -67,7 +67,7 @@ __global__ void integrate(
     if (i >= num_particles) return;
 
     Particle& p = particles[i];
-	p.energy += dt * ((*target_energy - *average_energy / num_particles));
+	p.energy = (p.energy - p.energy / *average_energy * *target_energy) * dt;
 	p.vx += force_x[i] * dt * p.energy;
 	p.vy += force_y[i] * dt * p.energy;
 	float speed = sqrtf(p.vx * p.vx + p.vy * p.vy);
@@ -86,7 +86,9 @@ __global__ void update_states(
     int num_states,
 	float dt,
 	float* mass,
-	int max_velocity
+	int max_velocity,
+	float* target_energy,
+	float* average_energy
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
@@ -95,8 +97,8 @@ __global__ void update_states(
 	if (p.potential > p.energy) {
 		p.state = (p.state + 1) % num_states;
 	}
-	p.potential = (p.potential + p.energy) * dt + p.potential * (1 - dt);
-	p.energy += (mass[p.state] * max_velocity - p.energy) * dt;
+	p.potential = (p.potential + p.energy) * dt + p.potential * (1 - dt * 2);
+	p.energy += (mass[p.state] * max_velocity * max_velocity - p.energy) * dt;
 }
 
 static Particle* d_particles = nullptr;
@@ -164,7 +166,7 @@ void step_simulation(int num_particles, int num_states, float dt, float max_velo
     integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, d_target_energy, d_average_energy);
     cudaDeviceSynchronize();
 
-    update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, max_velocity);
+    update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, max_velocity, d_target_energy, d_average_energy);
     cudaDeviceSynchronize();
 }
 
