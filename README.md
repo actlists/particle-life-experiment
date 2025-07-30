@@ -36,10 +36,18 @@ WIP
 
 ### Visuals
 
+<kbd>G</kbd> - Decrease particle size
+
+<kbd>H</kbd> - Increase particle size (May lag at above 2-3)
+
+<kbd>P</kbd> - Reset position & zoom
+
+<kbd>Space</kbd> - Pause
+
 <kbd>Mouse Wheel ↑</kbd> - Zoom in
 
 <kbd>Mouse Wheel ↓</kbd> - Zoom out
 
-<kbd>Right Click</kbd> - Toggle big particles (Laggy)
-
 <kbd>Mouse Drag</kbd> - Move
+
+<kbd>Right click</kbd> - (paused) Step simulation; (unpaused) Toggle glowing particles (laggy)
