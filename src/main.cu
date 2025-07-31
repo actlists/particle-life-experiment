@@ -14,6 +14,7 @@
 #define BLOCK_SIZE 256
 #define SMOOTH_BLOCK_SIZE 16
 #define MAX_STATES 32
+#define PI 3.141592653589
 
 __global__ void compute_forces(
     Particle* particles,
@@ -23,14 +24,13 @@ __global__ void compute_forces(
 	float dt,
     float* force_x,
     float* force_y,
-	float* mass,
-	float* potential_gain
+	float* mass
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
 
     Particle& p_i = particles[i];
-    float fx = 0.0f, fy = 0.0f, fd = 0.0f;
+    float fx = 0.0f, fy = 0.0f;
 	
     for (int j = 0; j < num_particles; ++j) {
         if (i == j) continue;
@@ -45,10 +45,7 @@ __global__ void compute_forces(
 
 		fx += dx * force / dist;
 		fy += dy * force / dist;
-		fd += force / dist / p_j.energy;
     }
-	p_i.potential += fd * dt;
-	p_i.energy += fd * dt / p_i.energy;
     force_x[i] = fx / mass[p_i.state];
     force_y[i] = fy / mass[p_i.state];
 }
@@ -85,8 +82,8 @@ __global__ void integrate(
 		p.vx *= limit_scale;
 		p.vy *= limit_scale;
 	}
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
+    p.x += p.vx * dt * p.energy;
+    p.y += p.vy * dt * p.energy;
 }
 
 __global__ void update_states(
@@ -96,7 +93,8 @@ __global__ void update_states(
 	float dt,
 	float* mass,
 	float* average_energy,
-	float* target_energy
+	float* target_energy,
+	float* potential_gain
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
@@ -108,9 +106,10 @@ __global__ void update_states(
 		p.energy *= mass[p.state] / mass[old_state];
 		p.potential /= mass[p.state] / mass[old_state];
 	}
-	float energy_adjustment = mass[p.state] + (*target_energy - *average_energy / num_particles);
-	p.energy = (1.0f - dt) * p.energy + dt * energy_adjustment;
+	float energy_adjustment = mass[p.state] * *target_energy;
+	p.energy = p.energy * (1 - dt) + dt * energy_adjustment;
 	p.energy = fmaxf(p.energy, 1e-4f);
+	p.potential += dt * *potential_gain / p.energy;
 }
 
 __device__ __host__ inline void unpackRGBA(uint32_t packed, float& r, float& g, float& b, float& a) {
@@ -192,48 +191,64 @@ void free_cuda_managed_buffers() {
 	d_num_states = nullptr;
 }
 
-void step_simulation(int num_particles, int num_states, float dt, float max_velocity, float target_energy, int frameskip, float potential_gain) {
+void step_simulation(int num_particles, int num_states, float dt, float max_velocity, float& target_energy, float& potential_gain) {
     int blockSize = BLOCK_SIZE;
     int gridSize = (num_particles + blockSize - 1) / blockSize;
-	*d_target_energy = target_energy;
-	*d_potential_gain = potential_gain;
-    // Initialize average energy and target energy in managed memory
-	for (int i = 0; i < frameskip; ++i) {
-		*d_average_energy = 0.0f;
-		compute_forces<<<gridSize, blockSize>>>(d_particles, d_rules, num_particles, num_states, dt, d_fx, d_fy, d_mass, d_potential_gain);
-		cudaDeviceSynchronize();
 
-		get_avg<<<gridSize, blockSize>>>(d_particles, num_particles, d_average_energy);
-		cudaDeviceSynchronize();
+    // Direct assignment instead of cudaMemcpy
+    *d_target_energy = target_energy;
+    *d_potential_gain = potential_gain;
+	
+	*d_average_energy = 0.0f;
+	cudaDeviceSynchronize();
+	
+	compute_forces<<<gridSize, blockSize>>>(
+		d_particles, d_rules, num_particles, num_states, dt, 
+		d_fx, d_fy, d_mass);
+	cudaDeviceSynchronize();
 
-		integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, d_mass);
-		cudaDeviceSynchronize();
+	get_avg<<<gridSize, blockSize>>>(d_particles, num_particles, d_average_energy);
+	cudaDeviceSynchronize();
 
-		update_states<<<gridSize, blockSize>>>(d_particles, num_particles, num_states, dt, d_mass, d_average_energy, d_target_energy);
-		cudaDeviceSynchronize();
-	}
+	integrate<<<gridSize, blockSize>>>(d_particles, d_fx, d_fy, num_particles, dt, max_velocity, d_mass);
+	cudaDeviceSynchronize();
+
+	update_states<<<gridSize, blockSize>>>(
+		d_particles, num_particles, num_states, dt, d_mass, 
+		d_average_energy, d_target_energy, d_potential_gain);
+	cudaDeviceSynchronize();
 }
-
-__global__ void renderDensityBlend(uint32_t* framebuffer, Particle* particles, int num_particles,
-                                   int width, int height, int num_states, float offsetX, float offsetY, float zoom, float particle_size, float* mass, float* target_energy) {
+__global__ void render_voronoi(uint32_t* framebuffer, Particle* particles, int num_particles,
+                                   int width, int height, int num_states, float offsetX, float offsetY, float zoom, float particle_size, float* mass, float* target_energy, int frameskip) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
 
     float3 color = make_float3(0, 0, 0);
     float2 pixel = make_float2(x + 0.5f, y + 0.5f);
-    float radius = particle_size;
+	float mindist2 = 1e20f;
+	for (int i = 0; i < num_particles; ++i) {
+		Particle p = particles[i];
+        float px = ((p.x - offsetX - width / 2) * zoom + width / 2);
+		float py = ((p.y - offsetY - height / 2) * zoom + height / 2);
+        float dx = px - x;
+        float dy = py - y;
+        float dist2 = dx * dx + dy * dy;
 
+        if (dist2 < mindist2) {
+            mindist2 = dist2;
+        }
+    }
     for (int i = 0; i < num_particles; ++i) {
 		Particle p = particles[i];
-		int px = (int)((p.x - offsetX - width / 2.0f) * zoom + width / 2.0f);
-		int py = (int)((p.y - offsetY - height / 2.0f) * zoom + height / 2.0f);
+		float px = (p.x - offsetX - width / 2) * zoom + width / 2;
+		float py = (p.y - offsetY - height / 2) * zoom + height / 2;
 		if (px >= 0 && px < width && py >= 0 && py < height) {
 			float2 pos = make_float2(px, py);
-			float dx = pos.x - pixel.x;
-			float dy = pos.y - pixel.y;
-			float intensity = fmaxf(0.0f, fminf(1.0f, radius / (2.0f * (dx * dx + dy * dy) + radius)));
-
+			float dx = px - x;
+			float dy = py - y;
+			float dist2 = dx * dx + dy * dy;
+			float intensity = fmaxf(0.0f, fminf(1.0f, 1.0f - sqrtf(dist2 - mindist2) / mindist2 / particle_size));
 			// Convert particle state to HSV color
 			float h = p.state / (float)num_states;
 			float s = fminf(1.0f, p.energy / mass[p.state] / *target_energy / 2) * 3 / 4 + 0.25;
@@ -264,11 +279,70 @@ __global__ void renderDensityBlend(uint32_t* framebuffer, Particle* particles, i
     color.z = fminf(1.0f, color.z);
 
     framebuffer[y * width + x] = packRGBA(
-        (uint8_t)(color.x * 255.0f),
-        (uint8_t)(color.y * 255.0f),
-        (uint8_t)(color.z * 255.0f),
+        (uint8_t)(framebuffer[y * width + x] * (1 - 1 / frameskip) + color.x * 255.0f / frameskip),
+        (uint8_t)(framebuffer[y * width + x] * (1 - 1 / frameskip) + color.y * 255.0f / frameskip),
+        (uint8_t)(framebuffer[y * width + x] * (1 - 1 / frameskip) + color.z * 255.0f / frameskip),
         255);
 }
+
+__device__ float gaussian_kernel(float u) {
+	return (1.0 / sqrtf(2.0 * PI)) * expf(-0.5 * u * u);
+}
+
+__global__ void render_voronoi2(uint32_t* framebuffer, Particle* particles, int num_particles,
+                                   int width, int height, int num_states, float offsetX, float offsetY, float zoom, float particle_size, float* mass, float* target_energy, int frameskip) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    float3 color = make_float3(0, 0, 0);
+    float2 pixel = make_float2(x + 0.5f, y + 0.5f);
+	float intensity = 0.0f;
+    for (int i = 0; i < num_particles; ++i) {
+		Particle p = particles[i];
+		float px = (p.x - offsetX - width / 2) * zoom + width / 2;
+		float py = (p.y - offsetY - height / 2) * zoom + height / 2;
+		if (px >= 0 && px < width && py >= 0 && py < height) {
+			float dx = px - x;
+			float dy = py - y;
+			float dist2 = dx * dx + dy * dy;
+			intensity = gaussian_kernel(sqrtf(dist2) / particle_size) / particle_size;
+			// Convert particle state to HSV color
+			float h = p.state / (float)num_states;
+			float s = fminf(1.0f, p.energy / mass[p.state] / *target_energy / 2) * 3 / 4 + 0.25;
+			float v = intensity * (fminf(1.0f, fmaxf(0.0f, 1.0f - p.potential / (p.energy * p.energy))) * 3 / 4 + 0.25);
+
+			// HSV → RGB
+			float c = v * s;
+			float h6 = h * 6.0f;
+			float xcol = c * (1.0f - fabsf(fmodf(h6, 2.0f) - 1.0f));
+			float3 rgb;
+			if      (h6 < 1) rgb = make_float3(c, xcol, 0);
+			else if (h6 < 2) rgb = make_float3(xcol, c, 0);
+			else if (h6 < 3) rgb = make_float3(0, c, xcol);
+			else if (h6 < 4) rgb = make_float3(0, xcol, c);
+			else if (h6 < 5) rgb = make_float3(xcol, 0, c);
+			else             rgb = make_float3(c, 0, xcol);
+			rgb.x += v - c;
+			rgb.y += v - c;
+			rgb.z += v - c;
+			color.x += rgb.x;
+			color.y += rgb.y;
+			color.z += rgb.z;
+		}
+    }
+
+    color.x = fminf(1.0f, color.x);
+    color.y = fminf(1.0f, color.y);
+    color.z = fminf(1.0f, color.z);
+
+    framebuffer[y * width + x] = packRGBA(
+        (uint8_t)(framebuffer[y * width + x] * (1 - 1 / frameskip) + color.x * 255.0f / frameskip),
+        (uint8_t)(framebuffer[y * width + x] * (1 - 1 / frameskip) + color.y * 255.0f / frameskip),
+        (uint8_t)(framebuffer[y * width + x] * (1 - 1 / frameskip) + color.z * 255.0f / frameskip),
+        255);
+}
+
 
 
 int main(int argc, char* argv[]) {
@@ -342,7 +416,8 @@ int main(int argc, char* argv[]) {
 	std::vector<uint32_t> accum(width * height, 0);
     bool quit = false;
 	bool pause = false;
-	bool undither = false;
+	bool voronoi2 = false;
+	bool voronoi = false;
 	int particle_size = 1;
     SDL_Event e;
 
@@ -414,11 +489,11 @@ int main(int argc, char* argv[]) {
 							break;
 						case SDLK_PERIOD:
 							target_energy *= 1.1f;
-							printf("Changed target_energy to %.2f\n", target_energy);
+							printf("Changed target_energy to %.5f\n", target_energy);
 							break;
 						case SDLK_COMMA:
 							target_energy /= 1.1f;
-							printf("Changed target_energy to %.2f\n", target_energy);
+							printf("Changed target_energy to %.5f\n", target_energy);
 							break;
 						case SDLK_2:
 							frameskip++;
@@ -447,6 +522,12 @@ int main(int argc, char* argv[]) {
 							particle_size++;
 							printf("Changed particle_size to %d\n", particle_size);
 							break;
+						case SDLK_5:
+							voronoi = !voronoi;
+							break;
+						case SDLK_6:
+							voronoi2 = !voronoi2;
+							break;
 					}
 					break;
 				case SDL_EVENT_MOUSE_WHEEL:
@@ -458,10 +539,8 @@ int main(int argc, char* argv[]) {
 						dragging = true;
 						lastMouseX = e.button.x;
 						lastMouseY = e.button.y;
-					} else if (e.button.button == SDL_BUTTON_RIGHT && pause) {
-						step_simulation(num_particles, num_states, dt, max_velocity, target_energy, frameskip, potential_gain);
-					} else if (e.button.button == SDL_BUTTON_RIGHT && !pause) {
-						undither = !undither;
+					} else if (e.button.button == SDL_BUTTON_RIGHT) {
+						step_simulation(num_particles, num_states, dt, max_velocity, target_energy, potential_gain);
 					}
 					break;
 				case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -481,83 +560,82 @@ int main(int argc, char* argv[]) {
 		}
         // Run simulation step - d_particles updated in place in managed memory
 		
-		if (!pause) step_simulation(num_particles, num_states, dt, max_velocity, target_energy, frameskip, potential_gain);
+		if (!pause) {
+			// Clear framebuffer to black
+			memset(framebuffer.data(), 0, width * height * sizeof(uint32_t));
+			memset(accum.data(), 0, width * height * sizeof(uint32_t));
+			for (int f = 0; f < frameskip; ++f) {
+				step_simulation(num_particles, num_states, dt, max_velocity, target_energy, potential_gain);
 
-        // Copy particle positions back to host vector for any CPU-side logic if needed
-        memcpy(particles.data(), d_particles, sizeof(Particle) * num_particles);
-		int num_visible = 0;
-		std::vector<Particle> visible_particles;
-		for (int i = 0; i < num_particles; ++i) {
-			Particle& p = particles[i];
-			int x = (int)((p.x - offsetX - width / 2.0f) * zoom + width / 2.0f);
-			int y = (int)((p.y - offsetY - height / 2.0f) * zoom + height / 2.0f);
-			if (x >= 0 && x < width && y >= 0 && y < height) {
-				visible_particles.push_back(p);
-				num_visible++;
-			}
-		}
-		// Clear framebuffer to black
-		memset(framebuffer.data(), 0, width * height * sizeof(uint32_t));
-		memset(accum.data(), 0, width * height * sizeof(uint32_t));
-		// Set each particle as a pixel
-		if (undither) {
-			dim3 threads(SMOOTH_BLOCK_SIZE, SMOOTH_BLOCK_SIZE);
-			dim3 blocks((width + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE, (height + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE);
-			std::copy(visible_particles.begin(), visible_particles.end(), d_visible);
-			cudaMemset(d_input, 0, width * height * sizeof(uint32_t));
-			renderDensityBlend<<<blocks, threads>>>(d_input, d_visible, num_visible, width, height, num_states, offsetX, offsetY, zoom, particle_size, d_mass, d_target_energy);
-			cudaError_t err = cudaGetLastError();
-			if (err != cudaSuccess) {
-				std::cerr << "CUDA kernel error: " << cudaGetErrorString(err) << std::endl;
-			}
-			cudaDeviceSynchronize();
-			cudaMemcpy(accum.data(), d_input, width * height * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-		} else {
-			for (int i = 0; i < num_visible; ++i) {
-				Particle& p = visible_particles[i];
-				int x = (int)((p.x - offsetX - width / 2.0f) * zoom + width / 2.0f);
-				int y = (int)((p.y - offsetY - height / 2.0f) * zoom + height / 2.0f);
-				if (x >= 0 && x < width && y >= 0 && y < height) {
-					float h = (float)p.state / (float)num_states;
-					float s = fminf(1.0f, p.energy / mass[p.state] / target_energy / 2) * 3 / 4 + 0.25;
-					float v = fminf(1.0f, fmaxf(0.0f, 1.0f - p.potential / (p.energy * p.energy))) * 3 / 4 + 0.25;
-					float c = v * s;
-					float x_col = c * (1 - fabsf(fmodf(h * 6.0f, 2) - 1));
-					float m = v - c;
+				// Copy particle positions back to host vector for any CPU-side logic if needed
+				memcpy(particles.data(), d_particles, sizeof(Particle) * num_particles);
+				int num_visible = 0;
+				std::vector<Particle> visible_particles;
+				for (int i = 0; i < num_particles; ++i) {
+					Particle& p = particles[i];
+					int x = (int)((p.x - offsetX - width / 2.0f) * zoom + width / 2.0f);
+					int y = (int)((p.y - offsetY - height / 2.0f) * zoom + height / 2.0f);
+					if (x >= 0 && x < width && y >= 0 && y < height) {
+						visible_particles.push_back(p);
+						num_visible++;
+					}
+				}
+				// Set each particle as a pixel
+				if (voronoi) {
+					dim3 threads(SMOOTH_BLOCK_SIZE, SMOOTH_BLOCK_SIZE);
+					dim3 blocks((width + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE, (height + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE);
+					std::copy(visible_particles.begin(), visible_particles.end(), d_visible);
+					cudaMemset(d_input, 0, width * height * sizeof(uint32_t));
+					render_voronoi<<<blocks, threads>>>(d_input, d_visible, num_visible, width, height, num_states, offsetX, offsetY, zoom, particle_size, d_mass, d_target_energy, frameskip);
+					cudaDeviceSynchronize();
+				} else if (voronoi2) {
+					dim3 threads(SMOOTH_BLOCK_SIZE, SMOOTH_BLOCK_SIZE);
+					dim3 blocks((width + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE, (height + SMOOTH_BLOCK_SIZE - 1) / SMOOTH_BLOCK_SIZE);
+					std::copy(visible_particles.begin(), visible_particles.end(), d_visible);
+					cudaMemset(d_input, 0, width * height * sizeof(uint32_t));
+					render_voronoi2<<<blocks, threads>>>(d_input, d_visible, num_visible, width, height, num_states, offsetX, offsetY, zoom, particle_size, d_mass, d_target_energy, frameskip);
+					cudaDeviceSynchronize();
+				} else {
+					for (int i = 0; i < num_visible; ++i) {
+						Particle& p = visible_particles[i];
+						int x = (int)((p.x - offsetX - width / 2.0f) * zoom + width / 2.0f);
+						int y = (int)((p.y - offsetY - height / 2.0f) * zoom + height / 2.0f);
+						if (x >= 0 && x < width && y >= 0 && y < height) {
+							float h = (float)p.state / (float)num_states;
+							float s = fminf(1.0f, p.energy / mass[p.state] / target_energy / 2) * 3 / 4 + 0.25;
+							float v = fminf(1.0f, fmaxf(0.0f, 1.0f - p.potential / (p.energy * p.energy))) * 3 / 4 + 0.25;
+							float c = v * s;
+							float x_col = c * (1 - fabsf(fmodf(h * 6.0f, 2) - 1));
+							float m = v - c;
 
-					float r_, g_, b_;
+							float r_, g_, b_;
 
-					int sector = (int)(h * 6);
-					switch (sector) {
-						case 0: r_ = c; g_ = x_col; b_ = 0; break;
-						case 1: r_ = x_col; g_ = c; b_ = 0; break;
-						case 2: r_ = 0; g_ = c; b_ = x_col; break;
-						case 3: r_ = 0; g_ = x_col; b_ = c; break;
-						case 4: r_ = x_col; g_ = 0; b_ = c; break;
-						case 5: default: r_ = c; g_ = 0; b_ = x_col; break;
-					}	
-					for (int dx = -particle_size; dx <= particle_size; ++dx) {
-						for (int dy = -particle_size; dy <= particle_size; ++dy) {
-							float dist = 1.0f;
-							if (particle_size > 0) {
-								dist = 1.0f - sqrtf((dx * dx + dy * dy) / (2.0f * particle_size * particle_size) + 1e-6f);
+							int sector = (int)(h * 6);
+							switch (sector) {
+								case 0: r_ = c; g_ = x_col; b_ = 0; break;
+								case 1: r_ = x_col; g_ = c; b_ = 0; break;
+								case 2: r_ = 0; g_ = c; b_ = x_col; break;
+								case 3: r_ = 0; g_ = x_col; b_ = c; break;
+								case 4: r_ = x_col; g_ = 0; b_ = c; break;
+								case 5: default: r_ = c; g_ = 0; b_ = x_col; break;
 							}
-							float r = 0, g = 0, b = 0, a = 0;
-							if ((x + dx) >= 0 && (x + dx) < width && (y + dy) >= 0 && (y + dy) < height) {
-								unpackRGBA(accum[(y + dy) * width + x + dx], r, g, b, a);
-								float a2_ = (a / 255.0f * (1.0f - dist) + dist);
-								uint8_t a2 = (uint8_t)(fminf(255.0, fmaxf(0.0, a2_ * 255.0f)));
-								uint8_t r2 = (uint8_t)(fminf(255.0, fmaxf(0.0, (r / 255.0f) * (a / 255.0f) * (1.0f - dist) + (r_ + m) * dist) * 255.0f / a2_));
-								uint8_t g2 = (uint8_t)(fminf(255.0, fmaxf(0.0, (g / 255.0f) * (a / 255.0f) * (1.0f - dist) + (g_ + m) * dist) * 255.0f / a2_));
-								uint8_t b2 = (uint8_t)(fminf(255.0, fmaxf(0.0, (b / 255.0f) * (a / 255.0f) * (1.0f - dist) + (b_ + m) * dist) * 255.0f / a2_));
-								accum[(y + dy) * width + x + dx] = (a2 << 24) | (b2 << 16) | (g2 << 8) | r2;
+							float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f;
+							if (x >= 0 && x < width && y >= 0 && y < height) {
+								unpackRGBA(framebuffer[y * width + x], r, g, b, a);
+								uint8_t r2 = (uint8_t)(fminf(255.0, fmaxf(0.0, r * (1 - frameskip) + (r_ + m) / frameskip) * 255.0f));
+								uint8_t g2 = (uint8_t)(fminf(255.0, fmaxf(0.0, g * (1 - frameskip) + (g_ + m) / frameskip) * 255.0f));
+								uint8_t b2 = (uint8_t)(fminf(255.0, fmaxf(0.0, b * (1 - frameskip) + (b_ + m) / frameskip) * 255.0f));
+								framebuffer[y * width + x] = (255 << 24) | (b2 << 16) | (g2 << 8) | r2;
 							}
 						}
 					}
 				}
 			}
+			if (voronoi || voronoi2) {
+				cudaMemcpy(framebuffer.data(), d_input, width * height * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+			}
 		}
-		SDL_UpdateTexture(texture, nullptr, accum.data(), width * sizeof(uint32_t));
+		SDL_UpdateTexture(texture, nullptr, framebuffer.data(), width * sizeof(uint32_t));
 		
         SDL_RenderClear(renderer);
         SDL_RenderTexture(renderer, texture, nullptr, nullptr);

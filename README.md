@@ -50,4 +50,8 @@ WIP
 
 <kbd>Mouse Drag</kbd> - Move
 
-<kbd>Right click</kbd> - (paused) Step simulation; (unpaused) Toggle glowing particles (laggy)
+<kbd>Right Click</kbd> - (paused) Step simulation
+
+<kbd>5</kbd> - Toggle Voronoi mode (laggy if a lot of particles are on screen)
+
+<kbd>6</kbd> - Toggle Smooth mode (laggy if a lot of particles are on screen)
