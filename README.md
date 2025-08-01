@@ -55,3 +55,5 @@ WIP
 <kbd>5</kbd> - Toggle Voronoi mode (laggy if a lot of particles are on screen)
 
 <kbd>6</kbd> - Toggle Smooth mode (laggy if a lot of particles are on screen)
+
+<kbd>F</kbd> - Toggle Flat mode (for use with Smooth mode)
