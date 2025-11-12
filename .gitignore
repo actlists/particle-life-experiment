@@ -1,3 +1,5 @@
 /build
 *.json
 *.exe
+src/SDL3-3.2.18
+*.dll
