@@ -96,7 +96,7 @@ __global__ void update_states(
 	float* average_energy,
 	float* target_energy,
 	float* potential_gain,
-	float* d_energy_mul,
+	float* d_energy_mul
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_particles) return;
